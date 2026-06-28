@@ -17,9 +17,9 @@ from pynput.keyboard import Controller as KbCtrl, Key, KeyCode
 from pynput.mouse import Button, Controller as MouseCtrl
 
 PORT    = 9000
-FPS     = 30
-QUALITY = 75      # JPEG quality — 75 is sharp without being huge
-WIDTH   = 1920    # full HD stream width
+FPS     = 20
+QUALITY = 60
+WIDTH   = 1280
 
 mouse_ctrl = MouseCtrl()
 kb_ctrl    = KbCtrl()
@@ -77,20 +77,19 @@ def handle(cmd, sw, sh):
         pyperclip.copy(cmd.get('text', ''))
 
 
-async def capture_loop(ws, stop, sw, sh):
+async def capture_loop(ws, stop, sw, sh, ready):
     dw = min(WIDTH, sw)
     dh = int(sh * dw / sw)
-    interval = 1.0 / FPS
     enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
-    header_prefix = struct.pack('!HH', sw, sh)   # screen size, sent once per frame
+    header_prefix = struct.pack('!HH', sw, sh)
 
     with mss.MSS() as sct:
         mon = sct.monitors[1]
         while not stop.is_set():
-            t0 = time.perf_counter()
+            await ready.wait()   # wait for client ACK before sending next frame
+            ready.clear()
             try:
                 shot  = sct.grab(mon)
-                # fast BGR conversion via numpy (no copy)
                 frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
                     (shot.height, shot.width, 4))[:, :, :3]
                 if frame.shape[1] != dw:
@@ -102,21 +101,23 @@ async def capture_loop(ws, stop, sw, sh):
                 await ws.send(payload)
             except Exception:
                 break
-            dt = time.perf_counter() - t0
-            await asyncio.sleep(max(0, interval - dt))
 
 
 async def handler(ws):
     sw, sh = screen_size()
     stop   = asyncio.Event()
-    task   = asyncio.create_task(capture_loop(ws, stop, sw, sh))
+    ready  = asyncio.Event()
+    ready.set()   # send first frame immediately
+    task   = asyncio.create_task(capture_loop(ws, stop, sw, sh, ready))
     print(f'[+] {ws.remote_address[0]} connected')
     try:
         async for msg in ws:
             if isinstance(msg, str):
                 try:
                     cmd = json.loads(msg)
-                    if cmd.get('t') == 'cb_get':
+                    if cmd.get('t') == 'ack':
+                        ready.set()   # client rendered a frame, send next
+                    elif cmd.get('t') == 'cb_get':
                         await ws.send(json.dumps(
                             {'t': 'cb', 'text': pyperclip.paste()}))
                     else:

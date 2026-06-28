@@ -259,7 +259,6 @@ class NakDesk:
             cw = self.canvas.winfo_width()
             ch = self.canvas.winfo_height()
             if cw > 4 and ch > 4:
-                # fast resize + BGR→RGB without extra copy
                 frame = cv2.resize(frame, (cw, ch),
                                    interpolation=cv2.INTER_LINEAR)
                 img  = Image.frombytes('RGB', (cw, ch),
@@ -272,6 +271,7 @@ class NakDesk:
                 else:
                     self.canvas.itemconfig(self._img_item,
                                            image=self._photo)
+            self._send({'t': 'ack'})   # tell host we rendered, send next frame
         except queue.Empty:
             pass
         self.root.after(14, self._render)   # ~70 fps render cap
