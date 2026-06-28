@@ -4,6 +4,7 @@ NakDesk Client — runs on the controlling PC.
 
 import asyncio
 import json
+import os
 import queue
 import ssl
 import struct
@@ -12,6 +13,8 @@ import threading
 import time
 import tkinter as tk
 from tkinter import simpledialog
+
+_LAST_ADDR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.last_host')
 
 import cv2
 import numpy as np
@@ -203,14 +206,23 @@ class NakDesk:
     # ── WebSocket ─────────────────────────────────────────────────────────
 
     def _ask_connect(self):
+        try:
+            last = open(_LAST_ADDR_FILE).read().strip()
+        except Exception:
+            last = ''
         addr = simpledialog.askstring('Connect',
             'Host address\n'
             'LAN:    192.168.1.10:9000\n'
             'ngrok:  wss://xxxx.ngrok-free.app',
+            initialvalue=last,
             parent=self.root)
         if not addr:
             return
         addr = addr.strip()
+        try:
+            open(_LAST_ADDR_FILE, 'w').write(addr)
+        except Exception:
+            pass
         if addr.startswith('ws://') or addr.startswith('wss://'):
             uri = addr
         else:
