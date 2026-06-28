@@ -190,11 +190,15 @@ class NakDesk:
 
     async def _ws_uri(self, uri):
         self._setstatus('Connecting…', '#ffd60a')
+        headers = {}
+        if 'ngrok' in uri:
+            headers['ngrok-skip-browser-warning'] = 'true'
         try:
             async with websockets.connect(
                     uri, max_size=None,
                     ping_interval=20,
-                    compression=None) as ws:
+                    compression=None,
+                    additional_headers=headers) as ws:
                 self.ws        = ws
                 self.connected = True
                 self._setstatus('● Connected', '#30d158')
