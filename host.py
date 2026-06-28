@@ -17,8 +17,9 @@ from pynput.keyboard import Controller as KbCtrl, Key, KeyCode
 from pynput.mouse import Button, Controller as MouseCtrl
 
 PORT    = 9000
-FPS     = 20
-QUALITY = 55   # JPEG quality — lower = faster
+FPS     = 30
+QUALITY = 75      # JPEG quality — 75 is sharp without being huge
+WIDTH   = 1920    # full HD stream width
 
 mouse_ctrl = MouseCtrl()
 kb_ctrl    = KbCtrl()
@@ -29,9 +30,9 @@ SPECIAL = {
     'ctrl': Key.ctrl_l, 'alt': Key.alt_l, 'shift': Key.shift_l,
     'super': Key.cmd,
     'up': Key.up, 'down': Key.down, 'left': Key.left, 'right': Key.right,
-    'home': Key.home, 'end': Key.end, 'page_up': Key.page_up, 'page_down': Key.page_down,
-    'f1': Key.f1, 'f2': Key.f2, 'f3': Key.f3, 'f4': Key.f4,
-    'f5': Key.f5, 'f6': Key.f6, 'f7': Key.f7, 'f8': Key.f8,
+    'home': Key.home, 'end': Key.end,
+    'page_up': Key.page_up, 'page_down': Key.page_down,
+    **{f'f{i}': getattr(Key, f'f{i}') for i in range(1, 9)},
 }
 
 
@@ -51,74 +52,73 @@ def resolve_key(k):
 
 def handle(cmd, sw, sh):
     t = cmd.get('t')
-
     if t == 'mm':
         mouse_ctrl.position = (int(cmd['x'] * sw), int(cmd['y'] * sh))
-
     elif t == 'mc':
         mouse_ctrl.position = (int(cmd['x'] * sw), int(cmd['y'] * sh))
         btn = Button.left if cmd['b'] == 'l' else Button.right
         (mouse_ctrl.press if cmd['d'] else mouse_ctrl.release)(btn)
-
     elif t == 'ms':
         mouse_ctrl.position = (int(cmd['x'] * sw), int(cmd['y'] * sh))
         mouse_ctrl.scroll(0, int(cmd['dy']))
-
     elif t == 'kp':
         k = resolve_key(cmd['k'])
         if k:
             try: kb_ctrl.press(k)
             except Exception: pass
-
     elif t == 'kr':
         k = resolve_key(cmd['k'])
         if k:
             try: kb_ctrl.release(k)
             except Exception: pass
-
     elif t == 'type':
         kb_ctrl.type(cmd.get('text', ''))
-
     elif t == 'cb_set':
         pyperclip.copy(cmd.get('text', ''))
 
 
-async def capture_loop(ws, stop):
-    sw, sh = screen_size()
+async def capture_loop(ws, stop, sw, sh):
+    dw = min(WIDTH, sw)
+    dh = int(sh * dw / sw)
     interval = 1.0 / FPS
+    enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
+    header_prefix = struct.pack('!HH', sw, sh)   # screen size, sent once per frame
+
     with mss.mss() as sct:
         mon = sct.monitors[1]
         while not stop.is_set():
             t0 = time.perf_counter()
             try:
                 shot  = sct.grab(mon)
-                frame = np.array(shot)[:, :, :3]
-                dw    = min(1280, sw)
-                dh    = int(sh * dw / sw)
+                # fast BGR conversion via numpy (no copy)
+                frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
+                    (shot.height, shot.width, 4))[:, :, :3]
                 if frame.shape[1] != dw:
-                    frame = cv2.resize(frame, (dw, dh))
-                _, buf = cv2.imencode('.jpg', frame,
-                                      [cv2.IMWRITE_JPEG_QUALITY, QUALITY])
-                data   = buf.tobytes()
-                header = b'F' + struct.pack('!IHH', len(data), sw, sh)
-                await ws.send(header + data)
+                    frame = cv2.resize(frame, (dw, dh),
+                                       interpolation=cv2.INTER_LINEAR)
+                _, buf  = cv2.imencode('.jpg', frame, enc_params)
+                data    = buf.tobytes()
+                payload = b'F' + struct.pack('!I', len(data)) + header_prefix + data
+                await ws.send(payload)
             except Exception:
                 break
-            await asyncio.sleep(max(0, interval - (time.perf_counter() - t0)))
+            dt = time.perf_counter() - t0
+            await asyncio.sleep(max(0, interval - dt))
 
 
 async def handler(ws):
     sw, sh = screen_size()
     stop   = asyncio.Event()
-    task   = asyncio.create_task(capture_loop(ws, stop))
-    print(f"[+] Client connected: {ws.remote_address}")
+    task   = asyncio.create_task(capture_loop(ws, stop, sw, sh))
+    print(f'[+] {ws.remote_address[0]} connected')
     try:
         async for msg in ws:
             if isinstance(msg, str):
                 try:
                     cmd = json.loads(msg)
                     if cmd.get('t') == 'cb_get':
-                        await ws.send(json.dumps({'t': 'cb', 'text': pyperclip.paste()}))
+                        await ws.send(json.dumps(
+                            {'t': 'cb', 'text': pyperclip.paste()}))
                     else:
                         handle(cmd, sw, sh)
                 except Exception:
@@ -128,7 +128,7 @@ async def handler(ws):
     finally:
         stop.set()
         task.cancel()
-        print("[-] Client disconnected")
+        print(f'[-] {ws.remote_address[0]} disconnected')
 
 
 def local_ip():
@@ -142,27 +142,62 @@ def local_ip():
         return '127.0.0.1'
 
 
-async def main():
-    ip = local_ip()
-    print(f"\n{'─'*44}")
-    print(f"  NakDesk Host  —  ready")
-    print(f"  Local  →  {ip}:{PORT}")
+def _check_macos_perms():
+    import ctypes
+    ok = True
 
-    # Optional ngrok tunnel for cross-network
+    # Screen Recording — CGPreflightScreenCaptureAccess
+    try:
+        CG = ctypes.cdll.LoadLibrary(
+            '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+        CG.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+        if not CG.CGPreflightScreenCaptureAccess():
+            print('\n⚠️  Screen Recording permission NOT granted!')
+            print('   System Settings → Privacy & Security → Screen Recording')
+            print('   Add Terminal (or Python) then RESTART this script.\n')
+            ok = False
+    except Exception:
+        pass
+
+    # Accessibility — AXIsProcessTrusted
+    try:
+        AS = ctypes.cdll.LoadLibrary(
+            '/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+        AS.AXIsProcessTrusted.restype = ctypes.c_bool
+        if not AS.AXIsProcessTrusted():
+            print('\n⚠️  Accessibility permission NOT granted!')
+            print('   System Settings → Privacy & Security → Accessibility')
+            print('   Add Terminal (or Python) then RESTART this script.\n')
+            ok = False
+    except Exception:
+        pass
+
+    return ok
+
+
+async def main():
+    import platform
+    if platform.system() == 'Darwin':
+        _check_macos_perms()
+
+    ip = local_ip()
+    print(f'\n{"─"*44}')
+    print(f'  NakDesk Host  —  ready')
+    print(f'  Local  →  {ip}:{PORT}')
     try:
         from pyngrok import ngrok
-        t = ngrok.connect(PORT, 'tcp')
+        t   = ngrok.connect(PORT, 'tcp')
         pub = t.public_url.replace('tcp://', '')
         h, p = pub.split(':')
-        print(f"  Public →  {h}:{p}  (share this)")
+        print(f'  Public →  {h}:{p}  (share this)')
     except Exception:
-        print(f"  (install pyngrok + set auth token for internet access)")
-
-    print(f"{'─'*44}\n")
-    print("  Waiting for connections…  Ctrl+C to stop\n")
+        pass
+    print(f'{"─"*44}\n')
 
     async with websockets.serve(handler, '0.0.0.0', PORT,
-                                max_size=None, ping_interval=20):
+                                max_size=None,
+                                ping_interval=20,
+                                compression=None):   # no per-message compression
         await asyncio.Future()
 
 
