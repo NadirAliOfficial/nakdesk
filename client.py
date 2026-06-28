@@ -191,14 +191,20 @@ class NakDesk:
     async def _ws_uri(self, uri):
         self._setstatus('Connecting…', '#ffd60a')
         headers = {}
-        if 'ngrok' in uri:
+        ssl_ctx = None
+        if 'ngrok' in uri or uri.startswith('wss://'):
             headers['ngrok-skip-browser-warning'] = 'true'
+            import ssl
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
         try:
             async with websockets.connect(
                     uri, max_size=None,
                     ping_interval=20,
                     compression=None,
-                    additional_headers=headers) as ws:
+                    additional_headers=headers,
+                    ssl=ssl_ctx) as ws:
                 self.ws        = ws
                 self.connected = True
                 self._setstatus('● Connected', '#30d158')
