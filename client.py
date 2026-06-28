@@ -168,19 +168,27 @@ class NakDesk:
 
     def _ask_connect(self):
         addr = simpledialog.askstring('Connect',
-            'Host address  (IP:PORT  e.g.  192.168.1.10:9000)',
+            'Host address\n'
+            'LAN:    192.168.1.10:9000\n'
+            'ngrok:  wss://xxxx.ngrok-free.app',
             parent=self.root)
         if not addr:
             return
         addr = addr.strip()
-        if ':' not in addr:
-            addr += ':9000'
-        h, p = addr.rsplit(':', 1)
-        threading.Thread(target=lambda: asyncio.run(self._ws(h, int(p))),
-                         daemon=True).start()
+        if addr.startswith('ws://') or addr.startswith('wss://'):
+            threading.Thread(target=lambda: asyncio.run(self._ws_uri(addr)),
+                             daemon=True).start()
+        else:
+            if ':' not in addr:
+                addr += ':9000'
+            h, p = addr.rsplit(':', 1)
+            threading.Thread(target=lambda: asyncio.run(self._ws_uri(f'ws://{h}:{p}')),
+                             daemon=True).start()
 
     async def _ws(self, host, port):
-        uri = f'ws://{host}:{port}'
+        await self._ws_uri(f'ws://{host}:{port}')
+
+    async def _ws_uri(self, uri):
         self._setstatus('Connecting…', '#ffd60a')
         try:
             async with websockets.connect(
