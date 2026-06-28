@@ -104,18 +104,19 @@ class NakDesk:
 
     def _bind(self):
         c = self.canvas
-        c.bind('<Motion>',                  self._mm)
-        c.bind('<ButtonPress-1>',           self._lp)
-        c.bind('<ButtonRelease-1>',         self._lr)
-        c.bind('<ButtonPress-3>',           self._rp)
-        c.bind('<ButtonRelease-3>',         self._rr)
-        c.bind('<Control-ButtonPress-1>',   self._rp)
-        c.bind('<Control-ButtonRelease-1>', self._rr)
-        c.bind('<MouseWheel>',              self._scroll)
+        c.bind('<Motion>',          self._mm)
+        c.bind('<ButtonPress-1>',   self._lp)
+        c.bind('<ButtonRelease-1>', self._lr)
+        c.bind('<MouseWheel>',      self._scroll)
         c.bind('<Button-4>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
         c.bind('<Button-5>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
         self.root.bind('<KeyPress>',   self._kp)
         self.root.bind('<KeyRelease>', self._kr)
+        # right-click at root level so macOS can't intercept before us
+        self.root.bind_all('<ButtonPress-3>',           self._rp_root)
+        self.root.bind_all('<ButtonRelease-3>',         self._rr_root)
+        self.root.bind_all('<Control-ButtonPress-1>',   self._rp_root)
+        self.root.bind_all('<Control-ButtonRelease-1>', self._rr_root)
         self.root.bind('<F11>',    lambda e: self.toggle_fs())
         self.root.bind('<Escape>', lambda e: (
             self.root.attributes('-fullscreen', False),
@@ -139,13 +140,24 @@ class NakDesk:
 
     def _lr(self, e): self._mc(e, 'l', False)
 
-    def _rp(self, e):
-        self.canvas.focus_set()
-        self._mc(e, 'r', True)
+    def _rp_root(self, e):
+        cx = e.x_root - self.canvas.winfo_rootx()
+        cy = e.y_root - self.canvas.winfo_rooty()
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if 0 <= cx < cw and 0 <= cy < ch:
+            self.canvas.focus_set()
+            self._send({'t': 'mc', 'x': cx / max(cw, 1),
+                        'y': cy / max(ch, 1), 'b': 'r', 'd': True})
         return 'break'
 
-    def _rr(self, e):
-        self._mc(e, 'r', False)
+    def _rr_root(self, e):
+        cx = e.x_root - self.canvas.winfo_rootx()
+        cy = e.y_root - self.canvas.winfo_rooty()
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        self._send({'t': 'mc', 'x': cx / max(cw, 1),
+                    'y': cy / max(ch, 1), 'b': 'r', 'd': False})
         return 'break'
 
     def _mm(self, e):
@@ -175,8 +187,6 @@ class NakDesk:
     }
 
     _CMD = {'Super_L', 'Super_R'}
-
-    _CURSOR_MAP = {0:'arrow', 1:'xterm', 2:'hand2', 3:'watch', 4:'fleur', 5:'sizing'}
 
     def _map(self, e):
         return self.KEY_MAP.get(e.keysym) or (e.char if len(e.char) == 1 else None)
@@ -269,6 +279,7 @@ class NakDesk:
                 self.connected = True
                 self._setstatus('● Connected', '#30d158')
                 self.root.after(0, self.canvas.focus_set)
+                self.root.after(0, lambda: self.canvas.config(cursor='none'))
 
                 async def _sender():
                     while True:
@@ -298,10 +309,6 @@ class NakDesk:
                             if d.get('t') == 'cb':
                                 pyperclip.copy(d['text'])
                                 self._setstatus('● Connected  📋 copied', '#30d158')
-                            elif d.get('t') == 'cursor':
-                                cur = self._CURSOR_MAP.get(d.get('c', 0), 'arrow')
-                                self.root.after(0, lambda c=cur:
-                                    self.canvas.config(cursor=c))
                 finally:
                     sender.cancel()
         except Exception as ex:
@@ -311,6 +318,7 @@ class NakDesk:
             self._loop     = None
             self._aq       = None
             self._setstatus('● Disconnected', '#ff453a')
+            self.root.after(0, lambda: self.canvas.config(cursor=''))
 
     def _setstatus(self, txt, col):
         self.root.after(0, lambda: self.status_lbl.config(text=txt, fg=col))

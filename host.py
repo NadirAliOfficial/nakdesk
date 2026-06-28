@@ -99,9 +99,9 @@ else:
     def _cursor_type(): return 0
 
 PORT    = 9000
-FPS     = 20
-QUALITY = 35
-WIDTH   = 960
+FPS     = 25
+QUALITY = 25
+WIDTH   = 800
 
 mouse_ctrl = MouseCtrl()
 kb_ctrl    = KbCtrl()
@@ -165,40 +165,51 @@ async def capture_loop(ws, stop, sw, sh):
     enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
     header_pre = struct.pack('!HH', sw, sh)
     interval   = 1.0 / FPS
-    last_ctype = -1
+    fq         = asyncio.Queue(maxsize=1)
 
-    with mss.MSS() as sct:
-        mon = sct.monitors[1]
-        wl, wt = mon['left'], mon['top']
-        while not stop.is_set():
-            t0 = time.perf_counter()
-            try:
-                if _IS_WIN:
-                    try:
-                        frame = _grab_with_cursor(wl, wt, sw, sh)
-                    except Exception:
+    async def _capture():
+        with mss.MSS() as sct:
+            mon    = sct.monitors[1]
+            wl, wt = mon['left'], mon['top']
+            while not stop.is_set():
+                t0 = time.perf_counter()
+                try:
+                    if _IS_WIN:
+                        try:
+                            frame = _grab_with_cursor(wl, wt, sw, sh)
+                        except Exception:
+                            shot  = sct.grab(mon)
+                            frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
+                                (shot.height, shot.width, 4))[:, :, :3]
+                    else:
                         shot  = sct.grab(mon)
                         frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
                             (shot.height, shot.width, 4))[:, :, :3]
-                else:
-                    shot  = sct.grab(mon)
-                    frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
-                        (shot.height, shot.width, 4))[:, :, :3]
-                if frame.shape[1] != dw:
-                    frame = cv2.resize(frame, (dw, dh),
-                                       interpolation=cv2.INTER_LINEAR)
-                _, buf  = cv2.imencode('.jpg', frame, enc_params)
-                payload = (b'F' + struct.pack('!I', len(buf))
-                           + header_pre + buf.tobytes())
+                    if frame.shape[1] != dw:
+                        frame = cv2.resize(frame, (dw, dh),
+                                           interpolation=cv2.INTER_LINEAR)
+                    _, buf  = cv2.imencode('.jpg', frame, enc_params)
+                    payload = (b'F' + struct.pack('!I', len(buf))
+                               + header_pre + buf.tobytes())
+                    try: fq.get_nowait()
+                    except asyncio.QueueEmpty: pass
+                    fq.put_nowait(payload)
+                except Exception:
+                    break
+                dt = time.perf_counter() - t0
+                await asyncio.sleep(max(0, interval - dt))
+
+    async def _send():
+        while not stop.is_set():
+            try:
+                payload = await asyncio.wait_for(fq.get(), timeout=1.0)
                 await ws.send(payload)
-                ct = _cursor_type()
-                if ct != last_ctype:
-                    last_ctype = ct
-                    await ws.send(json.dumps({'t': 'cursor', 'c': ct}))
+            except asyncio.TimeoutError:
+                continue
             except Exception:
                 break
-            dt = time.perf_counter() - t0
-            await asyncio.sleep(max(0, interval - dt))
+
+    await asyncio.gather(_capture(), _send())
 
 
 async def handler(ws):
