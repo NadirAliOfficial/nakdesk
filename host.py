@@ -78,16 +78,21 @@ if _IS_WIN:
 
         return np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))[:, :, :3]
 
-    # cursor handle → type id (arrow=0,text=1,hand=2,wait=3,move=4,resize=5)
     _IDC = {32512:0, 32513:1, 32649:2, 32514:3, 32646:4,
             32645:5, 32644:5, 32643:5, 32642:5}
-    _std_handles = {_u32.LoadCursorW(0, idc): t for idc, t in _IDC.items()}
 
     def _cursor_type():
-        ci = _CI()
-        ci.cbSize = ctypes.sizeof(_CI)
-        if _u32.GetCursorInfo(ctypes.byref(ci)):
-            return _std_handles.get(ci.hCursor, 0)
+        try:
+            ci = _CI()
+            ci.cbSize = ctypes.sizeof(_CI)
+            if not _u32.GetCursorInfo(ctypes.byref(ci)):
+                return 0
+            for idc, t in _IDC.items():
+                h = _u32.LoadCursorW(0, idc)
+                if h == ci.hCursor:
+                    return t
+        except Exception:
+            pass
         return 0
 
 else:
@@ -155,51 +160,41 @@ def handle(cmd, sw, sh):
 
 
 async def capture_loop(ws, stop, sw, sh):
-    dw = min(WIDTH, sw)
-    dh = int(sh * dw / sw)
-    enc_params  = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
-    header_pre  = struct.pack('!HH', sw, sh)
-    interval    = 1.0 / FPS
-    in_flight   = 0          # count of pending sends
-    MAX_FLIGHT  = 3          # drop frame if more than this many pending
-    last_ctype  = -1
-
-    async def _send(data):
-        nonlocal in_flight
-        in_flight += 1
-        try:
-            await ws.send(data)
-        except Exception:
-            pass
-        finally:
-            in_flight -= 1
+    dw         = min(WIDTH, sw)
+    dh         = int(sh * dw / sw)
+    enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
+    header_pre = struct.pack('!HH', sw, sh)
+    interval   = 1.0 / FPS
+    last_ctype = -1
 
     with mss.MSS() as sct:
         mon = sct.monitors[1]
-        _wl, _wt = mon['left'], mon['top']
+        wl, wt = mon['left'], mon['top']
         while not stop.is_set():
             t0 = time.perf_counter()
             try:
-                if in_flight < MAX_FLIGHT:
-                    if _IS_WIN:
-                        frame = _grab_with_cursor(_wl, _wt, sw, sh)
-                    else:
+                if _IS_WIN:
+                    try:
+                        frame = _grab_with_cursor(wl, wt, sw, sh)
+                    except Exception:
                         shot  = sct.grab(mon)
                         frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
                             (shot.height, shot.width, 4))[:, :, :3]
-                    if frame.shape[1] != dw:
-                        frame = cv2.resize(frame, (dw, dh),
-                                           interpolation=cv2.INTER_LINEAR)
-                    _, buf = cv2.imencode('.jpg', frame, enc_params)
-                    payload = (b'F' + struct.pack('!I', len(buf))
-                               + header_pre + buf.tobytes())
-                    asyncio.create_task(_send(payload))
-
-                    ct = _cursor_type()
-                    if ct != last_ctype:
-                        last_ctype = ct
-                        asyncio.create_task(
-                            _send(json.dumps({'t': 'cursor', 'c': ct})))
+                else:
+                    shot  = sct.grab(mon)
+                    frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
+                        (shot.height, shot.width, 4))[:, :, :3]
+                if frame.shape[1] != dw:
+                    frame = cv2.resize(frame, (dw, dh),
+                                       interpolation=cv2.INTER_LINEAR)
+                _, buf  = cv2.imencode('.jpg', frame, enc_params)
+                payload = (b'F' + struct.pack('!I', len(buf))
+                           + header_pre + buf.tobytes())
+                await ws.send(payload)
+                ct = _cursor_type()
+                if ct != last_ctype:
+                    last_ctype = ct
+                    await ws.send(json.dumps({'t': 'cursor', 'c': ct}))
             except Exception:
                 break
             dt = time.perf_counter() - t0
