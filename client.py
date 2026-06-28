@@ -102,20 +102,30 @@ class NakDesk:
 
     def _bind(self):
         c = self.canvas
-        c.bind('<Motion>',          self._mm)
-        c.bind('<ButtonPress-1>',   lambda e: self._mc(e, 'l', True))
-        c.bind('<ButtonRelease-1>', lambda e: self._mc(e, 'l', False))
-        c.bind('<ButtonPress-3>',   lambda e: self._mc(e, 'r', True))
-        c.bind('<ButtonRelease-3>', lambda e: self._mc(e, 'r', False))
-        c.bind('<MouseWheel>',      self._scroll)
-        c.bind('<Button-4>',        lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
-        c.bind('<Button-5>',        lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
+        c.bind('<Motion>',              self._mm)
+        c.bind('<ButtonPress-1>',       lambda e: self._mc(e, 'l', True))
+        c.bind('<ButtonRelease-1>',     lambda e: self._mc(e, 'l', False))
+        c.bind('<ButtonPress-3>',       self._rp)
+        c.bind('<ButtonRelease-3>',     self._rr)
+        c.bind('<Control-ButtonPress-1>',   self._rp)   # macOS Ctrl+click = right-click
+        c.bind('<Control-ButtonRelease-1>', self._rr)
+        c.bind('<MouseWheel>',          self._scroll)
+        c.bind('<Button-4>',            lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
+        c.bind('<Button-5>',            lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
         self.root.bind('<KeyPress>',   self._kp)
         self.root.bind('<KeyRelease>', self._kr)
         self.root.bind('<F11>',    lambda e: self.toggle_fs())
         self.root.bind('<Escape>', lambda e: (
             self.root.attributes('-fullscreen', False),
             setattr(self, 'fullscreen', False)) if self.fullscreen else None)
+
+    def _rp(self, e):
+        self._mc(e, 'r', True)
+        return 'break'   # suppress macOS context menu
+
+    def _rr(self, e):
+        self._mc(e, 'r', False)
+        return 'break'
 
     def _nx(self, e): return e.x / max(self.canvas.winfo_width(),  1)
     def _ny(self, e): return e.y / max(self.canvas.winfo_height(), 1)

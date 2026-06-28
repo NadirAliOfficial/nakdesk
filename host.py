@@ -17,9 +17,10 @@ from pynput.keyboard import Controller as KbCtrl, Key, KeyCode
 from pynput.mouse import Button, Controller as MouseCtrl
 
 PORT    = 9000
-FPS     = 20
-QUALITY = 60
+FPS     = 25
+QUALITY = 55
 WIDTH   = 1280
+WINDOW  = 4    # frames in-flight before waiting for ACK
 
 mouse_ctrl = MouseCtrl()
 kb_ctrl    = KbCtrl()
@@ -77,17 +78,18 @@ def handle(cmd, sw, sh):
         pyperclip.copy(cmd.get('text', ''))
 
 
-async def capture_loop(ws, stop, sw, sh, ready):
+async def capture_loop(ws, stop, sw, sh, sem):
     dw = min(WIDTH, sw)
     dh = int(sh * dw / sw)
     enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
     header_prefix = struct.pack('!HH', sw, sh)
+    interval = 1.0 / FPS
 
     with mss.MSS() as sct:
         mon = sct.monitors[1]
         while not stop.is_set():
-            await ready.wait()   # wait for client ACK before sending next frame
-            ready.clear()
+            await sem.acquire()   # sliding window — max WINDOW frames in flight
+            t0 = time.perf_counter()
             try:
                 shot  = sct.grab(mon)
                 frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
@@ -101,14 +103,15 @@ async def capture_loop(ws, stop, sw, sh, ready):
                 await ws.send(payload)
             except Exception:
                 break
+            dt = time.perf_counter() - t0
+            await asyncio.sleep(max(0, interval - dt))
 
 
 async def handler(ws):
     sw, sh = screen_size()
     stop   = asyncio.Event()
-    ready  = asyncio.Event()
-    ready.set()   # send first frame immediately
-    task   = asyncio.create_task(capture_loop(ws, stop, sw, sh, ready))
+    sem    = asyncio.Semaphore(WINDOW)
+    task   = asyncio.create_task(capture_loop(ws, stop, sw, sh, sem))
     print(f'[+] {ws.remote_address[0]} connected')
     try:
         async for msg in ws:
@@ -116,7 +119,7 @@ async def handler(ws):
                 try:
                     cmd = json.loads(msg)
                     if cmd.get('t') == 'ack':
-                        ready.set()   # client rendered a frame, send next
+                        sem.release()   # free one slot in the sliding window
                     elif cmd.get('t') == 'cb_get':
                         await ws.send(json.dumps(
                             {'t': 'cb', 'text': pyperclip.paste()}))
