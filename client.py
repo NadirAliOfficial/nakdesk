@@ -226,7 +226,7 @@ class NakDesk:
 
     async def _ws_uri(self, uri):
         self._setstatus('Connecting…', '#ffd60a')
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._aq   = asyncio.Queue()
 
         headers = {'ngrok-skip-browser-warning': 'true'}
@@ -253,7 +253,7 @@ class NakDesk:
                         try:
                             await ws.send(json.dumps(msg))
                         except Exception:
-                            break
+                            pass   # keep running — don't drop future messages
 
                 sender = asyncio.create_task(_sender())
                 try:

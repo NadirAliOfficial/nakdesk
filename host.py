@@ -190,7 +190,12 @@ async def main():
     print(f'  Local  →  {ip}:{PORT}')
     try:
         from pyngrok import ngrok
-        t   = ngrok.connect(PORT, 'http')
+        import configparser, os
+        cfg = configparser.ConfigParser()
+        cfg.read(os.path.join(os.path.dirname(__file__), 'config.ini'))
+        domain = cfg.get('ngrok', 'domain', fallback=None)
+        kwargs = {'domain': domain} if domain else {}
+        t   = ngrok.connect(PORT, 'http', **kwargs)
         pub = t.public_url.replace('http://', 'ws://').replace('https://', 'wss://')
         print(f'  Public →  {pub}  (share this)')
     except Exception:
