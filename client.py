@@ -188,6 +188,8 @@ class NakDesk:
 
     _CMD = {'Super_L', 'Super_R'}
 
+    _CURSOR_MAP = {0:'arrow', 1:'xterm', 2:'hand2', 3:'watch', 4:'fleur', 5:'sizing'}
+
     def _map(self, e):
         return self.KEY_MAP.get(e.keysym) or (e.char if len(e.char) == 1 else None)
 
@@ -279,7 +281,6 @@ class NakDesk:
                 self.connected = True
                 self._setstatus('● Connected', '#30d158')
                 self.root.after(0, self.canvas.focus_set)
-                self.root.after(0, lambda: self.canvas.config(cursor='none'))
 
                 async def _sender():
                     while True:
@@ -309,6 +310,10 @@ class NakDesk:
                             if d.get('t') == 'cb':
                                 pyperclip.copy(d['text'])
                                 self._setstatus('● Connected  📋 copied', '#30d158')
+                            elif d.get('t') == 'cursor':
+                                cur = self._CURSOR_MAP.get(d.get('c', 0), 'arrow')
+                                self.root.after(0, lambda c=cur:
+                                    self.canvas.config(cursor=c))
                 finally:
                     sender.cancel()
         except Exception as ex:
@@ -318,7 +323,7 @@ class NakDesk:
             self._loop     = None
             self._aq       = None
             self._setstatus('● Disconnected', '#ff453a')
-            self.root.after(0, lambda: self.canvas.config(cursor=''))
+            self.root.after(0, lambda: self.canvas.config(cursor='arrow'))
 
     def _setstatus(self, txt, col):
         self.root.after(0, lambda: self.status_lbl.config(text=txt, fg=col))

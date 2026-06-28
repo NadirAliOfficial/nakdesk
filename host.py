@@ -37,11 +37,6 @@ if _IS_WIN:
     class _CI(ctypes.Structure):
         _fields_ = [('cbSize', _wt.DWORD), ('flags', _wt.DWORD),
                     ('hCursor', _wt.HANDLE), ('ptScreenPos', _wt.POINT)]
-    class _II(ctypes.Structure):
-        _fields_ = [('fIcon', _wt.BOOL), ('xHotspot', _wt.DWORD),
-                    ('yHotspot', _wt.DWORD), ('hbmMask', _wt.HANDLE),
-                    ('hbmColor', _wt.HANDLE)]
-
     _u32 = ctypes.windll.user32
     _gdi = ctypes.windll.gdi32
 
@@ -51,17 +46,6 @@ if _IS_WIN:
         hbm     = _gdi.CreateCompatibleBitmap(hdc_src, w, h)
         _gdi.SelectObject(hdc_dst, hbm)
         _gdi.BitBlt(hdc_dst, 0, 0, w, h, hdc_src, left, top, 0x00CC0020)
-
-        ci = _CI()
-        ci.cbSize = ctypes.sizeof(_CI)
-        if _u32.GetCursorInfo(ctypes.byref(ci)) and ci.flags:
-            ii = _II()
-            _u32.GetIconInfo(ci.hCursor, ctypes.byref(ii))
-            dx = ci.ptScreenPos.x - left - ii.xHotspot
-            dy = ci.ptScreenPos.y - top  - ii.yHotspot
-            _u32.DrawIconEx(hdc_dst, dx, dy, ci.hCursor, 0, 0, 0, None, 3)
-            if ii.hbmMask:  _gdi.DeleteObject(ii.hbmMask)
-            if ii.hbmColor: _gdi.DeleteObject(ii.hbmColor)
 
         bmi = _BMI()
         bmi.bmiHeader.biSize     = ctypes.sizeof(_BMIH)
@@ -200,10 +184,15 @@ async def capture_loop(ws, stop, sw, sh):
                 await asyncio.sleep(max(0, interval - dt))
 
     async def _send():
+        last_ct = -1
         while not stop.is_set():
             try:
                 payload = await asyncio.wait_for(fq.get(), timeout=1.0)
                 await ws.send(payload)
+                ct = _cursor_type()
+                if ct != last_ct:
+                    last_ct = ct
+                    await ws.send(json.dumps({'t': 'cursor', 'c': ct}))
             except asyncio.TimeoutError:
                 continue
             except Exception:
