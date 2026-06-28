@@ -35,6 +35,7 @@ class NakDesk:
         self._last_mm   = 0.0
         self._loop      = None       # asyncio loop running in WS thread
         self._aq        = None       # asyncio.Queue — zero-delay sends
+        self._cmd_held  = False      # macOS Command key → translate to Ctrl
 
         self.root = tk.Tk()
         self.root.title('NakDesk')
@@ -156,20 +157,40 @@ class NakDesk:
         'Control_L':'ctrl','Control_R':'ctrl',
         'Alt_L':'alt','Alt_R':'alt',
         'Shift_L':'shift','Shift_R':'shift',
-        'Super_L':'super','Super_R':'super',
         'Up':'up','Down':'down','Left':'left','Right':'right',
         'Home':'home','End':'end','Prior':'page_up','Next':'page_down',
         **{f'F{i}':f'f{i}' for i in range(1,13)},
     }
 
+    _CMD = {'Super_L', 'Super_R'}   # macOS Command keys
+
     def _map(self, e):
         return self.KEY_MAP.get(e.keysym) or (e.char if len(e.char) == 1 else None)
 
     def _kp(self, e):
+        if e.keysym in self._CMD:
+            self._cmd_held = True
+            return
+        if self._cmd_held:
+            # Cmd+key → Ctrl+key on Windows
+            k = self.KEY_MAP.get(e.keysym) or (e.keysym.lower() if len(e.keysym) == 1 else None)
+            if k:
+                self._send({'t': 'kp', 'k': 'ctrl'})
+                self._send({'t': 'kp', 'k': k})
+            return
         k = self._map(e)
         if k: self._send({'t': 'kp', 'k': k})
 
     def _kr(self, e):
+        if e.keysym in self._CMD:
+            self._cmd_held = False
+            return
+        if self._cmd_held:
+            k = self.KEY_MAP.get(e.keysym) or (e.keysym.lower() if len(e.keysym) == 1 else None)
+            if k:
+                self._send({'t': 'kr', 'k': k})
+                self._send({'t': 'kr', 'k': 'ctrl'})
+            return
         k = self._map(e)
         if k: self._send({'t': 'kr', 'k': k})
 
