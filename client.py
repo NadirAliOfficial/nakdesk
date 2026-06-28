@@ -5,6 +5,7 @@ NakDesk Client — runs on the controlling PC.
 import asyncio
 import json
 import queue
+import ssl
 import struct
 import sys
 import threading
@@ -20,20 +21,20 @@ from PIL import Image, ImageTk
 
 
 class NakDesk:
-    BAR_H    = 36
-    MM_RATE  = 1 / 40   # max 40 mouse-move messages/sec
+    BAR_H   = 36
+    MM_RATE = 1 / 25   # 25 mouse-move msgs/sec — leaves bandwidth for clicks
 
     def __init__(self):
-        self.ws         = None
-        self.send_q     = queue.Queue()            # thread-safe: tkinter→asyncio
-        self.frame_q    = queue.Queue(maxsize=1)   # always latest frame only
+        self.frame_q    = queue.Queue(maxsize=1)
         self.screen_w   = 1920
         self.screen_h   = 1080
         self.fullscreen = False
         self.connected  = False
         self._photo     = None
         self._img_item  = None
-        self._last_mm   = 0.0   # time of last mouse-move sent
+        self._last_mm   = 0.0
+        self._loop      = None       # asyncio loop running in WS thread
+        self._aq        = None       # asyncio.Queue — zero-delay sends
 
         self.root = tk.Tk()
         self.root.title('NakDesk')
@@ -63,18 +64,15 @@ class NakDesk:
                  activeforeground='white', relief='flat',
                  font=('Arial', 10), padx=10, pady=4, cursor='hand2')
 
-        tk.Button(bar, text='Connect',          command=self._ask_connect, **b).pack(side=tk.LEFT,  padx=4)
-        tk.Button(bar, text='⛶ Fullscreen',     command=self.toggle_fs,    **b).pack(side=tk.RIGHT, padx=4)
-        tk.Button(bar, text='📋 Paste→Remote',  command=self._paste_out,   **b).pack(side=tk.RIGHT, padx=2)
-        tk.Button(bar, text='📋 Copy←Remote',   command=self._copy_in,     **b).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text='Connect',         command=self._ask_connect, **b).pack(side=tk.LEFT,  padx=4)
+        tk.Button(bar, text='⛶ Fullscreen',    command=self.toggle_fs,    **b).pack(side=tk.RIGHT, padx=4)
+        tk.Button(bar, text='📋 Paste→Remote', command=self._paste_out,   **b).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text='📋 Copy←Remote',  command=self._copy_in,     **b).pack(side=tk.RIGHT, padx=2)
 
-        self.canvas = tk.Canvas(self.root, bg='#000',
-                                highlightthickness=0)
+        self.canvas = tk.Canvas(self.root, bg='#000', highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
-        self.canvas.create_text(640, 360,
-                                text='Click Connect to start',
-                                fill='#555', font=('Arial', 18),
-                                tags='hint')
+        self.canvas.create_text(640, 360, text='Click Connect to start',
+                                fill='#555', font=('Arial', 18), tags='hint')
 
     # ── fullscreen ────────────────────────────────────────────────────────
 
@@ -102,16 +100,16 @@ class NakDesk:
 
     def _bind(self):
         c = self.canvas
-        c.bind('<Motion>',              self._mm)
-        c.bind('<ButtonPress-1>',       lambda e: self._mc(e, 'l', True))
-        c.bind('<ButtonRelease-1>',     lambda e: self._mc(e, 'l', False))
-        c.bind('<ButtonPress-3>',       self._rp)
-        c.bind('<ButtonRelease-3>',     self._rr)
-        c.bind('<Control-ButtonPress-1>',   self._rp)   # macOS Ctrl+click = right-click
+        c.bind('<Motion>',                  self._mm)
+        c.bind('<ButtonPress-1>',           self._lp)
+        c.bind('<ButtonRelease-1>',         self._lr)
+        c.bind('<ButtonPress-3>',           self._rp)
+        c.bind('<ButtonRelease-3>',         self._rr)
+        c.bind('<Control-ButtonPress-1>',   self._rp)
         c.bind('<Control-ButtonRelease-1>', self._rr)
-        c.bind('<MouseWheel>',          self._scroll)
-        c.bind('<Button-4>',            lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
-        c.bind('<Button-5>',            lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
+        c.bind('<MouseWheel>',              self._scroll)
+        c.bind('<Button-4>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
+        c.bind('<Button-5>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
         self.root.bind('<KeyPress>',   self._kp)
         self.root.bind('<KeyRelease>', self._kr)
         self.root.bind('<F11>',    lambda e: self.toggle_fs())
@@ -119,16 +117,23 @@ class NakDesk:
             self.root.attributes('-fullscreen', False),
             setattr(self, 'fullscreen', False)) if self.fullscreen else None)
 
+    def _nx(self, e): return e.x / max(self.canvas.winfo_width(),  1)
+    def _ny(self, e): return e.y / max(self.canvas.winfo_height(), 1)
+
+    def _lp(self, e):
+        self.canvas.focus_set()   # reclaim focus on every click
+        self._mc(e, 'l', True)
+
+    def _lr(self, e): self._mc(e, 'l', False)
+
     def _rp(self, e):
+        self.canvas.focus_set()
         self._mc(e, 'r', True)
-        return 'break'   # suppress macOS context menu
+        return 'break'
 
     def _rr(self, e):
         self._mc(e, 'r', False)
         return 'break'
-
-    def _nx(self, e): return e.x / max(self.canvas.winfo_width(),  1)
-    def _ny(self, e): return e.y / max(self.canvas.winfo_height(), 1)
 
     def _mm(self, e):
         now = time.perf_counter()
@@ -142,8 +147,8 @@ class NakDesk:
                     'b': btn, 'd': down})
 
     def _scroll(self, e):
-        dy = 3 if e.delta > 0 else -3
-        self._send({'t': 'ms', 'x': self._nx(e), 'y': self._ny(e), 'dy': dy})
+        self._send({'t': 'ms', 'x': self._nx(e), 'y': self._ny(e),
+                    'dy': 3 if e.delta > 0 else -3})
 
     KEY_MAP = {
         'Return':'enter','BackSpace':'backspace','Tab':'tab',
@@ -154,25 +159,25 @@ class NakDesk:
         'Super_L':'super','Super_R':'super',
         'Up':'up','Down':'down','Left':'left','Right':'right',
         'Home':'home','End':'end','Prior':'page_up','Next':'page_down',
-        **{f'F{i}':f'f{i}' for i in range(1,9)},
+        **{f'F{i}':f'f{i}' for i in range(1,13)},
     }
 
     def _map(self, e):
-        return self.KEY_MAP.get(e.keysym) or (e.char if len(e.char)==1 else None)
+        return self.KEY_MAP.get(e.keysym) or (e.char if len(e.char) == 1 else None)
 
     def _kp(self, e):
         k = self._map(e)
-        if k: self._send({'t':'kp','k':k})
+        if k: self._send({'t': 'kp', 'k': k})
 
     def _kr(self, e):
         k = self._map(e)
-        if k: self._send({'t':'kr','k':k})
+        if k: self._send({'t': 'kr', 'k': k})
 
-    # ── send ──────────────────────────────────────────────────────────────
+    # ── send — zero-delay via asyncio.Queue ───────────────────────────────
 
     def _send(self, msg):
-        if self.connected:
-            self.send_q.put_nowait(msg)
+        if self.connected and self._loop and self._aq:
+            self._loop.call_soon_threadsafe(self._aq.put_nowait, msg)
 
     # ── WebSocket ─────────────────────────────────────────────────────────
 
@@ -186,28 +191,30 @@ class NakDesk:
             return
         addr = addr.strip()
         if addr.startswith('ws://') or addr.startswith('wss://'):
-            threading.Thread(target=lambda: asyncio.run(self._ws_uri(addr)),
-                             daemon=True).start()
+            uri = addr
         else:
             if ':' not in addr:
                 addr += ':9000'
             h, p = addr.rsplit(':', 1)
-            threading.Thread(target=lambda: asyncio.run(self._ws_uri(f'ws://{h}:{p}')),
-                             daemon=True).start()
+            uri = f'ws://{h}:{p}'
+        threading.Thread(target=lambda: asyncio.run(self._ws_uri(uri)),
+                         daemon=True).start()
 
     async def _ws(self, host, port):
         await self._ws_uri(f'ws://{host}:{port}')
 
     async def _ws_uri(self, uri):
         self._setstatus('Connecting…', '#ffd60a')
-        headers = {}
+        self._loop = asyncio.get_event_loop()
+        self._aq   = asyncio.Queue()
+
+        headers = {'ngrok-skip-browser-warning': 'true'}
         ssl_ctx = None
-        if 'ngrok' in uri or uri.startswith('wss://'):
-            headers['ngrok-skip-browser-warning'] = 'true'
-            import ssl
+        if uri.startswith('wss://'):
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
+            ssl_ctx.verify_mode    = ssl.CERT_NONE
+
         try:
             async with websockets.connect(
                     uri, max_size=None,
@@ -215,18 +222,17 @@ class NakDesk:
                     compression=None,
                     additional_headers=headers,
                     ssl=ssl_ctx) as ws:
-                self.ws        = ws
                 self.connected = True
                 self._setstatus('● Connected', '#30d158')
                 self.root.after(0, self.canvas.focus_set)
 
                 async def _sender():
                     while True:
+                        msg = await self._aq.get()
                         try:
-                            msg = self.send_q.get_nowait()
                             await ws.send(json.dumps(msg))
-                        except queue.Empty:
-                            await asyncio.sleep(0.005)
+                        except Exception:
+                            break
 
                 sender = asyncio.create_task(_sender())
                 try:
@@ -240,7 +246,6 @@ class NakDesk:
                                 np.frombuffer(jpg, np.uint8),
                                 cv2.IMREAD_COLOR)
                             if frame is not None:
-                                # drop old frame, keep only latest
                                 try: self.frame_q.get_nowait()
                                 except queue.Empty: pass
                                 self.frame_q.put_nowait(frame)
@@ -255,13 +260,14 @@ class NakDesk:
             print(f'[WS] {ex}')
         finally:
             self.connected = False
-            self.ws        = None
+            self._loop     = None
+            self._aq       = None
             self._setstatus('● Disconnected', '#ff453a')
 
     def _setstatus(self, txt, col):
         self.root.after(0, lambda: self.status_lbl.config(text=txt, fg=col))
 
-    # ── render — ~60 fps ─────────────────────────────────────────────────
+    # ── render ────────────────────────────────────────────────────────────
 
     def _render(self):
         try:
@@ -271,20 +277,19 @@ class NakDesk:
             if cw > 4 and ch > 4:
                 frame = cv2.resize(frame, (cw, ch),
                                    interpolation=cv2.INTER_LINEAR)
-                img  = Image.frombytes('RGB', (cw, ch),
-                                       frame[:, :, ::-1].tobytes())
+                img = Image.frombytes('RGB', (cw, ch),
+                                      frame[:, :, ::-1].tobytes())
                 self._photo = ImageTk.PhotoImage(image=img)
                 if self._img_item is None:
                     self.canvas.delete('hint')
                     self._img_item = self.canvas.create_image(
                         0, 0, anchor=tk.NW, image=self._photo)
                 else:
-                    self.canvas.itemconfig(self._img_item,
-                                           image=self._photo)
-            self._send({'t': 'ack'})   # tell host we rendered, send next frame
+                    self.canvas.itemconfig(self._img_item, image=self._photo)
+            self._send({'t': 'ack'})
         except queue.Empty:
             pass
-        self.root.after(14, self._render)   # ~70 fps render cap
+        self.root.after(14, self._render)
 
     def run(self):
         self.root.after(100, self._render)

@@ -17,10 +17,10 @@ from pynput.keyboard import Controller as KbCtrl, Key, KeyCode
 from pynput.mouse import Button, Controller as MouseCtrl
 
 PORT    = 9000
-FPS     = 25
-QUALITY = 55
+FPS     = 30
+QUALITY = 50
 WIDTH   = 1280
-WINDOW  = 4    # frames in-flight before waiting for ACK
+WINDOW  = 6    # frames in-flight — higher = smoother on high-latency links
 
 mouse_ctrl = MouseCtrl()
 kb_ctrl    = KbCtrl()
