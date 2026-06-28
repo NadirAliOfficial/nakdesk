@@ -83,7 +83,7 @@ else:
     def _cursor_type(): return 0
 
 PORT    = 9000
-FPS     = 25
+FPS     = 30
 QUALITY = 25
 WIDTH   = 800
 
