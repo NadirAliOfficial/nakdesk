@@ -1,0 +1,8 @@
+websockets
+mss
+opencv-python
+numpy
+Pillow
+pynput
+pyperclip
+pyngrok
