@@ -37,7 +37,7 @@ SPECIAL = {
 
 
 def screen_size():
-    with mss.mss() as s:
+    with mss.MSS() as s:
         m = s.monitors[1]
         return m['width'], m['height']
 
@@ -84,7 +84,7 @@ async def capture_loop(ws, stop, sw, sh):
     enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
     header_prefix = struct.pack('!HH', sw, sh)   # screen size, sent once per frame
 
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         mon = sct.monitors[1]
         while not stop.is_set():
             t0 = time.perf_counter()
