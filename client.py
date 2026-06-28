@@ -104,9 +104,11 @@ class NakDesk:
 
     def _bind(self):
         c = self.canvas
-        c.bind('<Motion>',          self._mm)
-        c.bind('<ButtonPress-1>',   self._lp)
-        c.bind('<ButtonRelease-1>', self._lr)
+        c.bind('<Motion>',                 self._mm)
+        c.bind('<ButtonPress-1>',          self._lp)
+        c.bind('<ButtonRelease-1>',        self._lr)
+        c.bind('<Double-ButtonPress-1>',   self._lp)
+        c.bind('<Double-ButtonRelease-1>', self._lr)
         c.bind('<MouseWheel>',      self._scroll)
         c.bind('<Button-4>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
         c.bind('<Button-5>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
@@ -141,14 +143,15 @@ class NakDesk:
     def _lr(self, e): self._mc(e, 'l', False)
 
     def _rp_root(self, e):
-        cx = e.x_root - self.canvas.winfo_rootx()
-        cy = e.y_root - self.canvas.winfo_rooty()
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
-        if 0 <= cx < cw and 0 <= cy < ch:
-            self.canvas.focus_set()
-            self._send({'t': 'mc', 'x': cx / max(cw, 1),
-                        'y': cy / max(ch, 1), 'b': 'r', 'd': True})
+        cx = e.x_root - self.canvas.winfo_rootx()
+        cy = e.y_root - self.canvas.winfo_rooty()
+        self.canvas.focus_set()
+        self._send({'t': 'mc',
+                    'x': max(0.0, min(1.0, cx / max(cw, 1))),
+                    'y': max(0.0, min(1.0, cy / max(ch, 1))),
+                    'b': 'r', 'd': True})
         return 'break'
 
     def _rr_root(self, e):
