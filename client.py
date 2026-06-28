@@ -111,10 +111,9 @@ class NakDesk:
             b   = tk.Label(bar, text=text, fg=fg, bg=bg,
                            font=('Helvetica', 10), padx=11, pady=7,
                            cursor='hand2')
-            b.bind('<Button-1>',        lambda e: (cmd(), 'break'))
             b.bind('<Enter>',           lambda e: b.config(bg=hbg))
             b.bind('<Leave>',           lambda e: b.config(bg=bg))
-            b.bind('<ButtonPress-1>',   lambda e: b.config(bg=abg))
+            b.bind('<ButtonPress-1>',   lambda e: (b.config(bg=abg), cmd()))
             b.bind('<ButtonRelease-1>', lambda e: b.config(bg=hbg))
             return b
 
