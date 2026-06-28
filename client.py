@@ -27,6 +27,8 @@ class NakDesk:
     BAR_H   = 36
     MM_RATE = 1 / 25   # 25 mouse-move msgs/sec — leaves bandwidth for clicks
 
+    DCLICK_MS = 0.45   # double-click window in seconds
+
     def __init__(self):
         self.frame_q    = queue.Queue(maxsize=1)
         self.screen_w   = 1920
@@ -36,6 +38,7 @@ class NakDesk:
         self._photo     = None
         self._img_item  = None
         self._last_mm   = 0.0
+        self._last_lp   = 0.0        # for double-click detection
         self._loop      = None       # asyncio loop running in WS thread
         self._aq        = None       # asyncio.Queue — zero-delay sends
         self._cmd_held  = False      # macOS Command key → translate to Ctrl
@@ -104,11 +107,9 @@ class NakDesk:
 
     def _bind(self):
         c = self.canvas
-        c.bind('<Motion>',                 self._mm)
-        c.bind('<ButtonPress-1>',          self._lp)
-        c.bind('<ButtonRelease-1>',        self._lr)
-        c.bind('<Double-ButtonPress-1>',   self._lp)
-        c.bind('<Double-ButtonRelease-1>', self._lr)
+        c.bind('<Motion>',          self._mm)
+        c.bind('<ButtonPress-1>',   self._lp)
+        c.bind('<ButtonRelease-1>', self._lr)
         c.bind('<MouseWheel>',      self._scroll)
         c.bind('<Button-4>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy': 3}))
         c.bind('<Button-5>',  lambda e: self._send({'t':'ms','x':self._nx(e),'y':self._ny(e),'dy':-3}))
@@ -137,8 +138,16 @@ class NakDesk:
     def _ny(self, e): return e.y / max(self.canvas.winfo_height(), 1)
 
     def _lp(self, e):
-        self.canvas.focus_set()   # reclaim focus on every click
+        self.canvas.focus_set()
+        now = time.perf_counter()
+        if now - self._last_lp < self.DCLICK_MS:
+            # second click of a double-click — send an extra press+release first
+            self._mc(e, 'l', True)
+            self._mc(e, 'l', False)
+            self._flash(e.x, e.y, '#ffd60a')
+        self._last_lp = now
         self._mc(e, 'l', True)
+        self._flash(e.x, e.y)
 
     def _lr(self, e): self._mc(e, 'l', False)
 
@@ -152,6 +161,9 @@ class NakDesk:
                     'x': max(0.0, min(1.0, cx / max(cw, 1))),
                     'y': max(0.0, min(1.0, cy / max(ch, 1))),
                     'b': 'r', 'd': True})
+        self._flash(max(0, cx), max(0, cy), '#ff6b6b')
+        # reclaim focus after macOS context menu dismisses
+        self.root.after(300, self.canvas.focus_force)
         return 'break'
 
     def _rr_root(self, e):
@@ -162,6 +174,12 @@ class NakDesk:
         self._send({'t': 'mc', 'x': cx / max(cw, 1),
                     'y': cy / max(ch, 1), 'b': 'r', 'd': False})
         return 'break'
+
+    def _flash(self, x, y, color='#ffffff'):
+        r = 12
+        oid = self.canvas.create_oval(x - r, y - r, x + r, y + r,
+                                      outline=color, width=2, fill='')
+        self.root.after(250, lambda: self.canvas.delete(oid))
 
     def _mm(self, e):
         now = time.perf_counter()
