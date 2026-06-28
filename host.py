@@ -186,10 +186,9 @@ async def main():
     print(f'  Local  →  {ip}:{PORT}')
     try:
         from pyngrok import ngrok
-        t   = ngrok.connect(PORT, 'tcp')
-        pub = t.public_url.replace('tcp://', '')
-        h, p = pub.split(':')
-        print(f'  Public →  {h}:{p}  (share this)')
+        t   = ngrok.connect(PORT, 'http')
+        pub = t.public_url.replace('http://', 'ws://').replace('https://', 'wss://')
+        print(f'  Public →  {pub}  (share this)')
     except Exception:
         pass
     print(f'{"─"*44}\n')
