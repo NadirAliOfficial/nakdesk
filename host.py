@@ -83,7 +83,8 @@ else:
     def _cursor_type(): return 0
 
 PORT    = 9000
-FPS     = 60
+FPS_MAX = 60
+FPS_MIN = 5
 QUALITY = 25
 WIDTH   = 800
 
@@ -148,10 +149,11 @@ async def capture_loop(ws, stop, sw, sh):
     dh         = int(sh * dw / sw)
     enc_params = [cv2.IMWRITE_JPEG_QUALITY, QUALITY]
     header_pre = struct.pack('!HH', sw, sh)
-    interval   = 1.0 / FPS
     fq         = asyncio.Queue(maxsize=1)
+    interval   = 1.0 / FPS_MAX   # adapts at runtime
 
     async def _capture():
+        nonlocal interval
         with mss.MSS() as sct:
             mon    = sct.monitors[1]
             wl, wt = mon['left'], mon['top']
@@ -175,9 +177,15 @@ async def capture_loop(ws, stop, sw, sh):
                     _, buf  = cv2.imencode('.jpg', frame, enc_params)
                     payload = (b'F' + struct.pack('!I', len(buf))
                                + header_pre + buf.tobytes())
+                    was_full = fq.full()
                     try: fq.get_nowait()
                     except asyncio.QueueEmpty: pass
                     fq.put_nowait(payload)
+                    # back off if send can't keep up, ramp up when it can
+                    if was_full:
+                        interval = min(1.0 / FPS_MIN, interval * 1.1)
+                    else:
+                        interval = max(1.0 / FPS_MAX, interval * 0.95)
                 except Exception:
                     break
                 dt = time.perf_counter() - t0
