@@ -120,6 +120,15 @@ class NakDesk:
         self.root.bind('<Escape>', lambda e: (
             self.root.attributes('-fullscreen', False),
             setattr(self, 'fullscreen', False)) if self.fullscreen else None)
+        # macOS: bind Cmd+key explicitly so macOS doesn't swallow them
+        import sys as _sys
+        if _sys.platform == 'darwin':
+            for _ch in 'abcdefghijklmnopqrstuvwxyz0123456789[]\\;\',./`':
+                self.root.bind(f'<Command-{_ch}>',
+                               lambda e: self._cmd_key(e))
+            self.root.bind('<Command-Return>',  lambda e: self._cmd_key(e))
+            self.root.bind('<Command-BackSpace>',lambda e: self._cmd_key(e))
+            self.root.bind('<Command-Tab>',     lambda e: self._cmd_key(e))
 
     def _nx(self, e): return e.x / max(self.canvas.winfo_width(),  1)
     def _ny(self, e): return e.y / max(self.canvas.winfo_height(), 1)
@@ -165,22 +174,28 @@ class NakDesk:
         **{f'F{i}':f'f{i}' for i in range(1,13)},
     }
 
-    _CMD = {'Super_L', 'Super_R'}   # macOS Command keys
+    _CMD = {'Super_L', 'Super_R'}
+
+    _CURSOR_MAP = {0:'arrow', 1:'xterm', 2:'hand2', 3:'watch', 4:'fleur', 5:'sizing'}
 
     def _map(self, e):
         return self.KEY_MAP.get(e.keysym) or (e.char if len(e.char) == 1 else None)
+
+    def _cmd_key(self, e):
+        k = self.KEY_MAP.get(e.keysym) or (e.keysym.lower() if len(e.keysym) == 1 else None)
+        if k:
+            self._send({'t': 'kp', 'k': 'ctrl'})
+            self._send({'t': 'kp', 'k': k})
+            self._send({'t': 'kr', 'k': k})
+            self._send({'t': 'kr', 'k': 'ctrl'})
+        return 'break'
 
     def _kp(self, e):
         if e.keysym in self._CMD:
             self._cmd_held = True
             return
         if self._cmd_held:
-            # Cmd+key → Ctrl+key on Windows
-            k = self.KEY_MAP.get(e.keysym) or (e.keysym.lower() if len(e.keysym) == 1 else None)
-            if k:
-                self._send({'t': 'kp', 'k': 'ctrl'})
-                self._send({'t': 'kp', 'k': k})
-            return
+            return  # handled by explicit <Command-x> bindings
         k = self._map(e)
         if k: self._send({'t': 'kp', 'k': k})
 
@@ -189,10 +204,6 @@ class NakDesk:
             self._cmd_held = False
             return
         if self._cmd_held:
-            k = self.KEY_MAP.get(e.keysym) or (e.keysym.lower() if len(e.keysym) == 1 else None)
-            if k:
-                self._send({'t': 'kr', 'k': k})
-                self._send({'t': 'kr', 'k': 'ctrl'})
             return
         k = self._map(e)
         if k: self._send({'t': 'kr', 'k': k})
@@ -287,6 +298,10 @@ class NakDesk:
                             if d.get('t') == 'cb':
                                 pyperclip.copy(d['text'])
                                 self._setstatus('● Connected  📋 copied', '#30d158')
+                            elif d.get('t') == 'cursor':
+                                cur = self._CURSOR_MAP.get(d.get('c', 0), 'arrow')
+                                self.root.after(0, lambda c=cur:
+                                    self.canvas.config(cursor=c))
                 finally:
                     sender.cancel()
         except Exception as ex:
@@ -319,7 +334,6 @@ class NakDesk:
                         0, 0, anchor=tk.NW, image=self._photo)
                 else:
                     self.canvas.itemconfig(self._img_item, image=self._photo)
-            self._send({'t': 'ack'})
         except queue.Empty:
             pass
         self.root.after(14, self._render)
