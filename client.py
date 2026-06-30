@@ -251,7 +251,7 @@ class NakDesk:
 
     def _ask_connect(self):
         try:
-            last = open(_LAST_ADDR_FILE).read().strip()
+            last = open(_LAST_ADDR_FILE, encoding="utf-8").read().strip()
         except Exception:
             last = ''
         addr = simpledialog.askstring('Connect',
